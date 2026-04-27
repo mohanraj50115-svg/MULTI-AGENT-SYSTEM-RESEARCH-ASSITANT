@@ -253,17 +253,20 @@ Supports research + experiments
 elif page == "About":
     st.title("👤 About")
 
+elif page == "About":
+    st.title("👤 About")
+
     st.markdown("""
 Mr. Mohan K is a researcher in Biotechnology, currently pursuing a PhD at the Vellore Institute of Technology.
+
 His work focuses on AI-driven drug discovery, computational biology, and intelligent research systems. 
 He is building advanced platforms that combine artificial intelligence with biotechnology to accelerate scientific innovation.
 
-### 📞 Contact
-Phone: 9361245583  
-Email: mohanraj50115@gmail.com
-""")
+AI Research Assistant System  
+Supports RAG, multi-agent reasoning  
+Future: drug discovery AI  
 
-AI Research Assistant System
-Supports RAG, multi-agent reasoning
-Future: drug discovery AI
+### 📞 Contact  
+Phone: 9361245583  
+Email: mohanraj50115@gmail.com  
 """)
