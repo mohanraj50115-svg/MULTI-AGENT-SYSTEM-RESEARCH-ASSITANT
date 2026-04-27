@@ -3,6 +3,7 @@ import os
 import sqlite3
 import hashlib
 import re
+os.environ["GOOGLE_API_KEY"] = st.secrets["GOOGLE_API_KEY"]
 
 # ---------- LLM ----------
 from langchain_google_genai import ChatGoogleGenerativeAI
