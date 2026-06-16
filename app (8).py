@@ -165,12 +165,18 @@ def process_pdf(file):
 
     return FAISS.from_documents(chunks, embeddings)
 
-retriever = vector.as_retriever(
-    search_type="similarity",
-    search_kwargs={"k":5}
-)
+# ---------- RETRIEVAL ----------
+def retrieval(vector, q):
+    retriever = vector.as_retriever(
+        search_type="similarity",
+        search_kwargs={"k": 5}
+    )
 
-docs = retriever.invoke(q)
+    docs = retriever.invoke(q)
+
+    return "\n\n".join(
+        [d.page_content for d in docs]
+    )
 # ---------- AGENT ----------
 def mode(q):
     q = q.lower()
