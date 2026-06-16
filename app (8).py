@@ -102,17 +102,30 @@ embeddings = HuggingFaceEmbeddings(
     model_name="sentence-transformers/all-MiniLM-L6-v2"
 )
 
-# ---------- CLEAN ----------
 def clean_response(res):
-    text = res.content if hasattr(res, "content") else str(res)
-    if isinstance(text, list):
-        text = " ".join([str(i) for i in text])
-    text = str(text)
-    text = re.sub(r'signature.*', '', text, flags=re.I)
-    return text.strip()
+    try:
+        text = res.content
 
-def run_llm(prompt):
-    return clean_response(llm.invoke(prompt))
+        if isinstance(text, list):
+            cleaned = []
+            for item in text:
+                if hasattr(item, "text"):
+                    cleaned.append(item.text)
+                else:
+                    cleaned.append(str(item))
+
+            text = "\n".join(cleaned)
+
+        text = str(text)
+
+        text = text.replace("\\n", "\n")
+        text = text.replace("###", "")
+        text = text.replace("**", "")
+
+        return text.strip()
+
+    except Exception:
+        return str(res)
 
 # ---------- PROFILE ----------
 def get_name():
@@ -152,10 +165,12 @@ def process_pdf(file):
 
     return FAISS.from_documents(chunks, embeddings)
 
-def retrieval(vector, q):
-    docs = vector.as_retriever().invoke(q)
-    return "\n\n".join([d.page_content for d in docs])
+retriever = vector.as_retriever(
+    search_type="similarity",
+    search_kwargs={"k":5}
+)
 
+docs = retriever.invoke(q)
 # ---------- AGENT ----------
 def mode(q):
     q = q.lower()
@@ -213,60 +228,205 @@ if page == "Chat":
         history = "\n".join([f"{r}:{m}" for r, m in chat[-5:]])
 
         prompt = f"""
-User: {get_name()}
-History:
-{history}
-Context:
-{context}
-Question:
-{q}
-Answer in paragraph form.
+User:prompt = f"""
+You are a scientific research assistant.
+
+Read the research paper content below and provide:
+
+1. Title of the study
+2. Research objective
+3. Methodology
+4. Key findings
+5. Applications
+6. Limitations
+7. Simple summary for students
+
+Paper:
+{ctx}
+
+Write in clean markdown format.
 """
 
-        ans = run_llm(prompt)
+ans = run_llm(prompt)
 
         save_chat("assistant", ans)
 
         with st.chat_message("assistant"):
             st.write(ans)
 
-# ---------- PAPER ----------
 elif page == "Paper Analyzer":
-    st.title("📄 Paper Analyzer")
-    if "vector" in st.session_state:
-        ctx = retrieval(st.session_state.vector, "summarize paper")
-        ans = run_llm(f"Explain paper clearly:\n{ctx}")
-        st.write(ans)
-    else:
-        st.warning("Upload PDF")
+    st.title("📄 Research Paper Analysis")
 
+    if "vector" in st.session_state:
+
+        with st.spinner("Analyzing paper..."):
+
+            ctx = retrieval(
+                st.session_state.vector,
+                "research objective methodology findings conclusion"
+            )
+
+            prompt = f"""
+            Analyze this research paper and provide:
+
+            ## Research Objective
+
+            ## Methodology
+
+            ## Key Findings
+
+            ## Conclusion
+
+            ## Future Scope
+
+            ## Simple Explanation
+
+            Paper:
+            {ctx}
+            """
+
+            ans = run_llm(prompt)
+
+        st.markdown(ans)
+
+    else:
+        st.warning("Please upload a research paper PDF first.")
+
+# ---------- PROFILE ----------
+elif page == "Profile":
+    st.title("👤 My Profile")
+
+    current_name = get_name()
+
+    name = st.text_input(
+        "Full Name",
+        value=current_name
+    )
+
+    if st.button("Save Profile"):
+        save_name(name)
+        st.success("Profile updated successfully!")
+
+    st.markdown(f"""
+    ### User Information
+
+    **Name:** {current_name}
+
+    **Username:** {st.session_state.user}
+    """)
+
+    st.markdown("""
+    ### About Me
+
+    Biotechnology student with a strong foundation in molecular biology, microbiology, and applied biosciences. Experienced in scientific literature review, research analysis, and AI-powered biotechnology applications.
+
+    ### Research Interests
+    - Molecular Biology
+    - Microbiology
+    - Bioinformatics
+    - Computational Biology
+    - Drug Discovery
+    - Artificial Intelligence in Biotechnology
+
+    ### Technical Skills
+    - Python
+    - Streamlit
+    - LangChain
+    - Google Gemini AI
+    - FAISS
+    - Hugging Face Embeddings
+    - SQLite
+    """)
 
 # ---------- HELP ----------
 elif page == "Help":
-    st.write("""
-Upload PDF → Ask questions
-Use chat or analyzer
-Supports research + experiments
-""")
-
-# ---------- ABOUT ----------
-elif page == "About":
-    st.title("👤 About")
-
-elif page == "About":
-    st.title("👤 About")
+    st.title("❓ Help & User Guide")
 
     st.markdown("""
-Mr. Mohan K is a researcher in Biotechnology, currently pursuing a PhD at the Vellore Institute of Technology.
+    ## Welcome to AI Research Assistant System
 
-His work focuses on AI-driven drug discovery, computational biology, and intelligent research systems. 
-He is building advanced platforms that combine artificial intelligence with biotechnology to accelerate scientific innovation.
+    This platform helps researchers and students analyze scientific literature using Artificial Intelligence and Retrieval-Augmented Generation (RAG).
 
-AI Research Assistant System  
-Supports RAG, multi-agent reasoning  
-Future: drug discovery AI  
+    ### 🚀 Getting Started
 
-### 📞 Contact  
-Phone: 9361245583  
-Email: mohanraj50115@gmail.com  
+    #### Step 1: Upload a Research Paper
+    - Use the PDF uploader in the sidebar.
+    - Upload a scientific article or research paper in PDF format.
+    - The system will process the document and create a searchable knowledge base.
+
+    #### Step 2: Ask Questions
+    - Go to the **Chat** section.
+    - Ask questions related to your uploaded paper.
+    - The AI will retrieve relevant information and provide contextual answers.
+
+    #### Step 3: Analyze the Paper
+    - Open **Paper Analyzer**.
+    - Get an AI-generated summary of the uploaded research article.
+
+    ### 🔬 Supported Research Tasks
+    - Research Paper Summarization
+    - Literature Review Support
+    - Scientific Question Answering
+    - Research Gap Exploration
+    - Experimental Design Assistance
+    - Knowledge Retrieval from PDFs
+
+    ### 🧠 Technologies Used
+    - Google Gemini AI
+    - LangChain
+    - FAISS Vector Database
+    - Hugging Face Embeddings
+    - Streamlit
+    - SQLite
+
+    ### 💡 Tips
+    - Upload clear and readable PDFs.
+    - Ask specific scientific questions for better responses.
+    - Use the Paper Analyzer for quick literature insights.
+    - Clear chat history from the sidebar when starting a new project.
+
+    Happy Researching! 🧬
+    """)
+
+  # ---------- ABOUT ----------
+elif page == "About":
+    st.title("👨‍🔬 About the Developer")
+
+    st.markdown("""
+    ## Mohan K
+
+    Biotechnology Student | AI Research Enthusiast
+
+    I am a Biotechnology student with a strong foundation in molecular biology, microbiology, and applied biosciences. My interests lie at the intersection of biotechnology and artificial intelligence, where I explore innovative solutions for research automation, scientific knowledge discovery, and drug development.
+
+    ### Academic Interests
+    - Molecular Biology
+    - Microbiology
+    - Bioinformatics
+    - Computational Biology
+    - Artificial Intelligence in Biotechnology
+    - Drug Discovery
+
+    ### Technical Skills
+    - Python
+    - Streamlit
+    - LangChain
+    - Google Gemini AI
+    - FAISS
+    - Hugging Face Embeddings
+    - SQLite
+
+    ### About This Project
+    The AI Research Assistant System helps researchers and students analyze scientific literature, summarize research papers, and retrieve knowledge using AI-powered Retrieval-Augmented Generation (RAG).
+
+    ### Career Objective
+    Seeking opportunities to develop research, analytical, and biotechnology skills through hands-on projects and collaborative research.
+
+    📧 Email: mohanraj50115@gmail.com
+
+    🔗 LinkedIn:
+    www.linkedin.com/in/mohan-k-307749308
+
+    🚀 Passionate about combining AI and Biotechnology to solve real-world challenges.
+    """)
 """)
