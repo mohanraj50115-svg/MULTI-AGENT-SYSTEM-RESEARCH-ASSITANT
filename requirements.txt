@@ -1,8 +1,7 @@
 streamlit
-sqlite3
-hashlib
 langchain
 langchain-google-genai
 langchain-community
 faiss-cpu
 pymupdf
+sentence-transformers
