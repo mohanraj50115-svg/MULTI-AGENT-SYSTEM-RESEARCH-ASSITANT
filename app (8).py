@@ -58,6 +58,7 @@ def init_db():
         """)
         conn.commit()
 
+# Force-initialize schemas before any application view code executes
 init_db()
 
 # ---------- SECURITY ENGINE ----------
@@ -95,7 +96,8 @@ if st.session_state.user is None:
         u = st.text_input("Credential Identifier (Username)", key="auth_u")
         p = st.text_input("Access Token (Password)", type="password", key="auth_p")
         if st.button("Initialize Session", use_container_width=True):
-            if login(u, p):
+            res = login(u, p)
+            if res:
                 st.session_state.user = u
                 st.success("Authorization granted. Mounting workspace...")
                 st.rerun()
@@ -115,8 +117,9 @@ if st.session_state.user is None:
 # ---------- CACHED AI RESOURCES ----------
 @st.cache_resource
 def instantiate_llm() -> ChatGoogleGenerativeAI:
+    # UPDATED: Replaced deprecated gemini-1.5-flash with stable gemini-2.5-flash endpoint
     return ChatGoogleGenerativeAI(
-        model="gemini-1.5-flash", 
+        model="gemini-2.5-flash", 
         temperature=0.15,  
         max_output_tokens=2048
     )
@@ -172,11 +175,11 @@ def advanced_retrieval(vector_db: FAISS, user_query: str) -> str:
     matched_docs = retriever.invoke(hypothetical_answer)
     return "\n\n".join([doc.page_content for doc in matched_docs])
 
-# ---------- USER PROFILE DATA MATRIX (CRITICAL BUG FIXES HERE) ----------
+# ---------- USER PROFILE DATA MATRIX ----------
 def load_user_profile() -> dict:
     with sqlite3.connect(DB_PATH) as conn:
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor() # Explicitly tied to localized thread connection
+        conn.row_factory = sqlite3.Row  # Clean key-value conversion dictionary format
+        cursor = conn.cursor()
         cursor.execute("SELECT * FROM profile WHERE username=?", (st.session_state.user,))
         res = cursor.fetchone()
         if res:
@@ -193,7 +196,7 @@ def load_user_profile() -> dict:
 
 def save_user_profile(profile_data: dict):
     with sqlite3.connect(DB_PATH) as conn:
-        cursor = conn.cursor() # Explicitly tied to localized thread connection
+        cursor = conn.cursor()
         cursor.execute("""
         INSERT OR REPLACE INTO profile 
         (username, name, role_title, institution, biography, research_interests, technical_skills, publications_projects) 
@@ -210,22 +213,24 @@ def save_user_profile(profile_data: dict):
         ))
         conn.commit()
 
-# ---------- ISOLATED CHAT STORAGE (CRITICAL BUG FIXES HERE) ----------
+# ---------- ISOLATED CHAT STORAGE (STRICTLY SAFE MANIPULATION) ----------
 def archive_chat_interaction(role: str, message: str):
     with sqlite3.connect(DB_PATH) as conn:
-        cursor = conn.cursor() # Explicitly tied to localized thread connection
+        cursor = conn.cursor()
         cursor.execute("INSERT INTO chats (username, role, message) VALUES (?, ?, ?)", (st.session_state.user, role, message))
         conn.commit()
 
 def retrieve_chat_history() -> List[Tuple[str, str]]:
     with sqlite3.connect(DB_PATH) as conn:
-        cursor = conn.cursor() # Explicitly tied to localized thread connection
+        # Explicit connection-level initialization ensures row isolation from profile row factories
+        conn.row_factory = None 
+        cursor = conn.cursor()
         cursor.execute("SELECT role, message FROM chats WHERE username=? ORDER BY timestamp ASC", (st.session_state.user,))
         return cursor.fetchall()
 
 def purge_user_chat_history():
     with sqlite3.connect(DB_PATH) as conn:
-        cursor = conn.cursor() # Explicitly tied to localized thread connection
+        cursor = conn.cursor()
         cursor.execute("DELETE FROM chats WHERE username=?", (st.session_state.user,))
         conn.commit()
 
