@@ -3,19 +3,22 @@ import os
 import sqlite3
 import hashlib
 import re
-os.environ["GOOGLE_API_KEY"] = st.secrets["GOOGLE_API_KEY"]
 
-# ---------- LLM ----------
+# ---------- LLM & LANGCHAIN ----------
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_community.document_loaders import PyMuPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from langchain_community.embeddings import HuggingFaceEmbeddings
 
+# Must be configured before using the Gemini API
+if "GOOGLE_API_KEY" in st.secrets:
+    os.environ["GOOGLE_API_KEY"] = st.secrets["GOOGLE_API_KEY"]
+
 # ---------- PAGE ----------
 st.set_page_config(page_title="🧬 AI Research System", layout="wide")
 
-# ---------- DATABASE ----------
+# ---------- DATABASE SETUP ----------
 conn = sqlite3.connect("app.db", check_same_thread=False)
 cursor = conn.cursor()
 
@@ -37,11 +40,10 @@ CREATE TABLE IF NOT EXISTS chats (
 
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS profile (
-    username TEXT,
+    username TEXT PRIMARY KEY,
     name TEXT
 )
 """)
-
 conn.commit()
 
 # ---------- SECURITY ----------
@@ -53,89 +55,74 @@ def signup(u, p):
         cursor.execute("INSERT INTO users VALUES (?, ?)", (u, hash_password(p)))
         conn.commit()
         return True
-    except:
+    except sqlite3.IntegrityError:
         return False
 
 def login(u, p):
     cursor.execute("SELECT * FROM users WHERE username=? AND password=?", (u, hash_password(p)))
     return cursor.fetchone()
 
-# ---------- SESSION ----------
+# ---------- SESSION STATE ----------
 if "user" not in st.session_state:
     st.session_state.user = None
 
-# ---------- LOGIN UI ----------
+# ---------- LOGIN / SIGNUP UI ----------
 if st.session_state.user is None:
     st.title("🔐 Login / Signup")
-
     tab1, tab2 = st.tabs(["Login", "Signup"])
 
     with tab1:
-        u = st.text_input("Username")
-        p = st.text_input("Password", type="password")
+        u = st.text_input("Username", key="login_user")
+        p = st.text_input("Password", type="password", key="login_pass")
         if st.button("Login"):
             if login(u, p):
                 st.session_state.user = u
-                st.success("Logged in")
+                st.success("Logged in successfully!")
                 st.rerun()
             else:
                 st.error("Invalid credentials")
 
     with tab2:
-        u = st.text_input("New Username")
-        p = st.text_input("New Password", type="password")
+        u = st.text_input("New Username", key="signup_user")
+        p = st.text_input("New Password", type="password", key="signup_pass")
         if st.button("Create Account"):
             if signup(u, p):
-                st.success("Account created")
+                st.success("Account created! Please log in.")
             else:
-                st.error("Username exists")
-
+                st.error("Username already exists")
     st.stop()
 
-# ---------- MODEL ----------
-llm = ChatGoogleGenerativeAI(
-    model="models/gemini-flash-latest",
-    temperature=0.3
-)
+# ---------- MODEL INITIALIZATION ----------
+@st.cache_resource
+def load_llm():
+    return ChatGoogleGenerativeAI(
+        model="gemini-1.5-flash",  # Upgraded to stable generation architecture 
+        temperature=0.3
+    )
 
-embeddings = HuggingFaceEmbeddings(
-    model_name="sentence-transformers/all-MiniLM-L6-v2"
-)
+@st.cache_resource
+def load_embeddings():
+    return HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
 
-def clean_response(res):
+llm = load_llm()
+embeddings = load_embeddings()
+
+# Helper function to invoke LLM safely
+def run_llm(prompt_text):
     try:
-        text = res.content
+        response = llm.invoke(prompt_text)
+        return response.content
+    except Exception as e:
+        return f"An error occurred while generating a response: {str(e)}"
 
-        if isinstance(text, list):
-            cleaned = []
-            for item in text:
-                if hasattr(item, "text"):
-                    cleaned.append(item.text)
-                else:
-                    cleaned.append(str(item))
-
-            text = "\n".join(cleaned)
-
-        text = str(text)
-
-        text = text.replace("\\n", "\n")
-        text = text.replace("###", "")
-        text = text.replace("**", "")
-
-        return text.strip()
-
-    except Exception:
-        return str(res)
-
-# ---------- PROFILE ----------
+# ---------- PROFILE MANAGEMENT ----------
 def get_name():
     cursor.execute("SELECT name FROM profile WHERE username=?", (st.session_state.user,))
     r = cursor.fetchone()
     return r[0] if r else st.session_state.user
 
 def save_name(name):
-    cursor.execute("DELETE FROM profile WHERE username=?", (st.session_state.user,))
-    cursor.execute("INSERT INTO profile VALUES (?, ?)", (st.session_state.user, name))
+    cursor.execute("INSERT OR REPLACE INTO profile (username, name) VALUES (?, ?)", (st.session_state.user, name))
     conn.commit()
 
 # ---------- CHAT MEMORY ----------
@@ -152,7 +139,7 @@ def clear_chat():
     cursor.execute("DELETE FROM chats WHERE username=?", (st.session_state.user,))
     conn.commit()
 
-# ---------- PDF ----------
+# ---------- PDF & RAG ENGINE ----------
 def process_pdf(file):
     with open("temp.pdf", "wb") as f:
         f.write(file.read())
@@ -162,39 +149,23 @@ def process_pdf(file):
 
     splitter = RecursiveCharacterTextSplitter(chunk_size=1500, chunk_overlap=200)
     chunks = splitter.split_documents(docs)
+    
+    # Clean up temp file
+    if os.path.exists("temp.pdf"):
+        os.remove("temp.pdf")
 
     return FAISS.from_documents(chunks, embeddings)
 
-# ---------- RETRIEVAL ----------
-def retrieval(vector, q):
-    retriever = vector.as_retriever(
+def retrieval(vector_store, query):
+    retriever = vector_store.as_retriever(
         search_type="similarity",
         search_kwargs={"k": 5}
     )
+    docs = retriever.invoke(query)
+    return "\n\n".join([d.page_content for d in docs])
 
-    docs = retriever.invoke(q)
-
-    return "\n\n".join(
-        [d.page_content for d in docs]
-    )
-# ---------- AGENT ----------
-def mode(q):
-    q = q.lower()
-    if "experiment" in q:
-        return "experiment"
-    elif "proposal" in q:
-        return "proposal"
-    elif "gap" in q:
-        return "research"
-    elif "paper" in q:
-        return "paper"
-    elif "pdf" in q:
-        return "rag"
-    else:
-        return "explain"
-
-# ---------- SIDEBAR ----------
-st.sidebar.write(f"👤 {get_name()}")
+# ---------- SIDEBAR NAVIGATION ----------
+st.sidebar.write(f"劈 {get_name()}")
 
 if st.sidebar.button("Logout"):
     st.session_state.user = None
@@ -202,26 +173,28 @@ if st.sidebar.button("Logout"):
 
 page = st.sidebar.radio("Menu", ["Chat", "Paper Analyzer", "Profile", "Help", "About"])
 
-pdf = st.sidebar.file_uploader("Upload PDF")
-
+pdf = st.sidebar.file_uploader("Upload PDF", type=["pdf"])
 if pdf:
-    st.session_state.vector = process_pdf(pdf)
-    st.sidebar.success("PDF ready")
+    with st.sidebar.spinner("Parsing document chunks..."):
+        st.session_state.vector = process_pdf(pdf)
+    st.sidebar.success("PDF knowledge index ready!")
 
-if st.sidebar.button("Clear Chat"):
+if st.sidebar.button("Clear Chat History"):
     clear_chat()
     st.rerun()
 
-# ---------- CHAT ----------
+# ---------- APP PAGES ----------
+
+# 1. CHAT UI
 if page == "Chat":
-    st.title(f"💬 Welcome {get_name()}")
+    st.title(f"💬 Welcome, {get_name()}")
 
     chat = load_chat()
-    for r, m in chat:
-        with st.chat_message(r):
-            st.write(m)
+    for role, message in chat:
+        with st.chat_message(role):
+            st.write(message)
 
-    q = st.chat_input("Ask...")
+    q = st.chat_input("Ask a question about biology, AI, or your document...")
     if q:
         save_chat("user", q)
         with st.chat_message("user"):
@@ -231,208 +204,128 @@ if page == "Chat":
         if "vector" in st.session_state:
             context = retrieval(st.session_state.vector, q)
 
-        history = "\n".join([f"{r}:{m}" for r, m in chat[-5:]])
+        # Get recent 5 pairs of exchanges for context memory window
+        history = "\n".join([f"{r}: {m}" for r, m in chat[-10:]])
 
         prompt = f"""
-User:prompt = f"""
-You are a scientific research assistant.
+You are an advanced AI Research Assistant tailored for Biotechnology and Computational Biology.
+User: {get_name()}
 
-Read the research paper content below and provide:
+Conversation History:
+{history}
 
-1. Title of the study
-2. Research objective
-3. Methodology
-4. Key findings
-5. Applications
-6. Limitations
-7. Simple summary for students
+Document Reference Context:
+{context}
 
-Paper:
-{ctx}
+Question:
+{q}
 
-Write in clean markdown format.
+Provide a well-structured academic response. Use markdown formatting elements like bolding, tables, or bulleted items when appropriate to make complex metrics readable.
 """
-
-ans = run_llm(prompt)
-
+        with st.chat_message("assistant"):
+            with st.spinner("Analyzing context..."):
+                ans = run_llm(prompt)
+                st.write(ans)
+        
         save_chat("assistant", ans)
 
-        with st.chat_message("assistant"):
-            st.write(ans)
-
+# 2. PAPER ANALYZER UI
 elif page == "Paper Analyzer":
-    st.title("📄 Research Paper Analysis")
+    st.title("📄 Research Paper Automated Executive Summary")
 
     if "vector" in st.session_state:
-
-        with st.spinner("Analyzing paper..."):
-
+        with st.spinner("Extracting parameters and processing structural context..."):
             ctx = retrieval(
                 st.session_state.vector,
-                "research objective methodology findings conclusion"
+                "research objective methodology findings conclusion limitations future work"
             )
 
             prompt = f"""
-            Analyze this research paper and provide:
+Analyze this research data extract and organize a detailed report incorporating these sections exactly:
+Use clean, professional Markdown syntax.
 
-            ## Research Objective
+## Research Objective
+*Provide clear bullet items outlining objectives*
 
-            ## Methodology
+## Methodology
+*Analyze design patterns, architectures or assays used*
 
-            ## Key Findings
+## Key Findings
+*Outline experimental results*
 
-            ## Conclusion
+## Conclusion
+*Summarize primary takeaways*
 
-            ## Future Scope
+## Future Scope
+*Where can this work expand next?*
 
-            ## Simple Explanation
+## Simple Explanation
+*A high-level plain English summary mapping what this means for non-technical peers*
 
-            Paper:
-            {ctx}
-            """
-
+Paper Context:
+{ctx}
+"""
             ans = run_llm(prompt)
-
         st.markdown(ans)
-
     else:
-        st.warning("Please upload a research paper PDF first.")
+        st.warning("⚠️ Please upload a research paper PDF in the sidebar to initialize analytics.")
 
-# ---------- PROFILE ----------
+# 3. PROFILE UI
 elif page == "Profile":
-    st.title("👤 My Profile")
-
+    st.title("👤 Research Profile Settings")
     current_name = get_name()
 
-    name = st.text_input(
-        "Full Name",
-        value=current_name
-    )
-
+    name = st.text_input("Full Name", value=current_name)
     if st.button("Save Profile"):
         save_name(name)
         st.success("Profile updated successfully!")
+        st.rerun()
 
+    st.markdown("---")
     st.markdown(f"""
     ### User Information
-
-    **Name:** {current_name}
-
-    **Username:** {st.session_state.user}
-    """)
-
-    st.markdown("""
+    * **Display Name:** {current_name}
+    * **System Identifier:** {st.session_state.user}
+    
     ### About Me
-
     Biotechnology student with a strong foundation in molecular biology, microbiology, and applied biosciences. Experienced in scientific literature review, research analysis, and AI-powered biotechnology applications.
 
     ### Research Interests
-    - Molecular Biology
-    - Microbiology
-    - Bioinformatics
-    - Computational Biology
-    - Drug Discovery
-    - Artificial Intelligence in Biotechnology
+    * Molecular Biology & Genetics
+    * Bioinformatics & Computational Modeling
+    * Automated High-Throughput Screening & Drug Discovery
+    * Machine Learning Application inside Applied Biology
 
-    ### Technical Skills
-    - Python
-    - Streamlit
-    - LangChain
-    - Google Gemini AI
-    - FAISS
-    - Hugging Face Embeddings
-    - SQLite
+    ### Core Framework Competencies
+    * **Languages:** Python, SQL
+    * **AI Engineering:** LangChain, Google Gemini API, FAISS, Hugging Face Tokenizers
+    * **UI/Data Deployments:** Streamlit, SQLite
     """)
 
-# ---------- HELP ----------
+# 4. HELP GUIDE
 elif page == "Help":
-    st.title("❓ Help & User Guide")
-
+    st.title("❓ Help & Documentation Engine")
     st.markdown("""
-    ## Welcome to AI Research Assistant System
+    ### 🚀 Getting Started Workflow
 
-    This platform helps researchers and students analyze scientific literature using Artificial Intelligence and Retrieval-Augmented Generation (RAG).
-
-    ### 🚀 Getting Started
-
-    #### Step 1: Upload a Research Paper
-    - Use the PDF uploader in the sidebar.
-    - Upload a scientific article or research paper in PDF format.
-    - The system will process the document and create a searchable knowledge base.
-
-    #### Step 2: Ask Questions
-    - Go to the **Chat** section.
-    - Ask questions related to your uploaded paper.
-    - The AI will retrieve relevant information and provide contextual answers.
-
-    #### Step 3: Analyze the Paper
-    - Open **Paper Analyzer**.
-    - Get an AI-generated summary of the uploaded research article.
-
-    ### 🔬 Supported Research Tasks
-    - Research Paper Summarization
-    - Literature Review Support
-    - Scientific Question Answering
-    - Research Gap Exploration
-    - Experimental Design Assistance
-    - Knowledge Retrieval from PDFs
-
-    ### 🧠 Technologies Used
-    - Google Gemini AI
-    - LangChain
-    - FAISS Vector Database
-    - Hugging Face Embeddings
-    - Streamlit
-    - SQLite
-
-    ### 💡 Tips
-    - Upload clear and readable PDFs.
-    - Ask specific scientific questions for better responses.
-    - Use the Paper Analyzer for quick literature insights.
-    - Clear chat history from the sidebar when starting a new project.
-
-    Happy Researching! 🧬
+    1. **Upload Reference Media:** Drag and drop any multi-page scientific study manuscript (PDF format) into the left-hand sidebar workspace tool. 
+    2. **Context Engine Build:** The platform automatically splits data arrays using recursive text splitters to embed data blocks via vector modeling directly into a running local storage database instance.
+    3. **Query Engine Processing:** Open the **Chat** interface to run complex contextual lookups or use **Paper Analyzer** to produce custom executive summaries instantaneously.
+    
+    ### 💡 Pro-Tips for Optimal Prompt Performance
+    * Keep questions direct and contextually aligned to what exists inside your uploaded document schema.
+    * Use the **Clear Chat History** option whenever starting a brand new topic framework to prevent token overflow bottlenecks.
     """)
 
-  # ---------- ABOUT ----------
+# 5. ABOUT PAGE
 elif page == "About":
-    st.title("👨‍🔬 About the Developer")
-
+    st.title("👨‍🔬 System Developer Blueprint")
     st.markdown("""
-    ## Mohan K
+    ### Mohan K
+    **Biotechnology Scholar & Applied AI Developer**
+    
+    This interface bridges the gap between processing raw scientific publications and surfacing instant intelligence insights using Retrieval-Augmented Generation (RAG).
 
-    Biotechnology Student | AI Research Enthusiast
-
-    I am a Biotechnology student with a strong foundation in molecular biology, microbiology, and applied biosciences. My interests lie at the intersection of biotechnology and artificial intelligence, where I explore innovative solutions for research automation, scientific knowledge discovery, and drug development.
-
-    ### Academic Interests
-    - Molecular Biology
-    - Microbiology
-    - Bioinformatics
-    - Computational Biology
-    - Artificial Intelligence in Biotechnology
-    - Drug Discovery
-
-    ### Technical Skills
-    - Python
-    - Streamlit
-    - LangChain
-    - Google Gemini AI
-    - FAISS
-    - Hugging Face Embeddings
-    - SQLite
-
-    ### About This Project
-    The AI Research Assistant System helps researchers and students analyze scientific literature, summarize research papers, and retrieve knowledge using AI-powered Retrieval-Augmented Generation (RAG).
-
-    ### Career Objective
-    Seeking opportunities to develop research, analytical, and biotechnology skills through hands-on projects and collaborative research.
-
-    📧 Email: mohanraj50115@gmail.com
-
-    🔗 LinkedIn:
-    www.linkedin.com/in/mohan-k-307749308
-
-    🚀 Passionate about combining AI and Biotechnology to solve real-world challenges.
+    * **Contact Interface:** mohanraj50115@gmail.com
+    * **Professional Networks:** [LinkedIn Workspace Profile](http://www.linkedin.com/in/mohan-k-307749308)
     """)
-""")
