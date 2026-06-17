@@ -24,8 +24,7 @@ st.set_page_config(
 )
 
 # ---------- THREAD-SAFE DATABASE INTERFACE ----------
-# RENAMED to force Streamlit to build a fresh, uncorrupted database schema
-DB_PATH = "research_core.db"
+DB_PATH = "research_core_v4.db"
 
 def init_db():
     with sqlite3.connect(DB_PATH) as conn:
@@ -198,4 +197,30 @@ def load_user_profile() -> dict:
             return dict(res)
         return fallback_profile
 
-def save_user_
+def save_user_profile(profile_data: dict):
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+        INSERT OR REPLACE INTO profile 
+        (username, name, role_title, institution, biography, research_interests, technical_skills, publications_projects) 
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            st.session_state.user,
+            profile_data["name"],
+            profile_data["role_title"],
+            profile_data["institution"],
+            profile_data["biography"],
+            profile_data["research_interests"],
+            profile_data["technical_skills"],
+            profile_data["publications_projects"]
+        ))
+        conn.commit()
+
+# ---------- ISOLATED CHAT STORAGE ----------
+def archive_chat_interaction(role: str, message: str):
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.execute("INSERT INTO chats (username, role, message) VALUES (?, ?, ?)", (st.session_state.user, role, message))
+        conn.commit()
+
+def retrieve_chat_history() ->
