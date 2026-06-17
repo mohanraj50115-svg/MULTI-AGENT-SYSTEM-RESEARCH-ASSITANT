@@ -3,7 +3,7 @@ import os
 import sqlite3
 import hashlib
 import tempfile
-from typing import Dict, Any, List, Tuple
+from typing import List, Tuple
 
 # ---------- LLM & ADVANCED ORCHESTRATION ----------
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -47,7 +47,13 @@ def init_db():
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS profile (
             username TEXT PRIMARY KEY,
-            name TEXT
+            name TEXT,
+            role_title TEXT,
+            institution TEXT,
+            biography TEXT,
+            research_interests TEXT,
+            technical_skills TEXT,
+            publications_projects TEXT
         )
         """)
         conn.commit()
@@ -111,7 +117,7 @@ if st.session_state.user is None:
 def instantiate_llm() -> ChatGoogleGenerativeAI:
     return ChatGoogleGenerativeAI(
         model="gemini-1.5-flash", 
-        temperature=0.15,  # Low temperature optimized for rigorous scientific truthfulness
+        temperature=0.15,  
         max_output_tokens=2048
     )
 
@@ -155,7 +161,6 @@ def process_pdf(uploaded_file) -> FAISS:
     return vector_store
 
 def advanced_retrieval(vector_db: FAISS, user_query: str) -> str:
-    """ Implements a Hypothetical Document Embedding (HyDE) approach via a dual-loop prompt mechanism. """
     hyde_generation_prompt = f"""
     You are a principal computational biologist. Generate a single highly technical, ideal paragraph answering the following request. 
     Use specialized jargon, chemical formulas, or analytical patterns appropriate for the topic. Do not include introductory notes.
@@ -163,27 +168,49 @@ def advanced_retrieval(vector_db: FAISS, user_query: str) -> str:
     Target Request: {user_query}
     """
     hypothetical_answer = run_inference(hyde_generation_prompt)
-    
-    # Use the synthesized high-density response to search the real vector store
     retriever = vector_db.as_retriever(search_type="mmr", search_kwargs={"k": 5, "fetch_k": 15})
     matched_docs = retriever.invoke(hypothetical_answer)
     return "\n\n".join([doc.page_content for doc in matched_docs])
 
-# ---------- USER PROFILE PERSISTENCE ----------
-def get_user_profile_name() -> str:
+# ---------- USER PROFILE DATA MATRIX (UPGRADED) ----------
+def load_user_profile() -> dict:
     with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
-        cursor.execute("SELECT name FROM profile WHERE username=?", (st.session_state.user,))
+        cursor.execute("SELECT * FROM profile WHERE username=?", (st.session_state.user,))
         res = cursor.fetchone()
-        return res[0] if res else st.session_state.user
+        if res:
+            return dict(res)
+        return {
+            "name": "Mohan K",
+            "role_title": "Biotechnology & AI Systems Researcher",
+            "institution": "Department of Biotechnology",
+            "biography": "Biotechnology student with a strong foundation in molecular biology, microbiology, and applied biosciences. Experienced in scientific literature review, research analysis, and AI-powered biotechnology applications.",
+            "research_interests": "Molecular Biology, Microbiology, Bioinformatics, Computational Biology, Drug Discovery, Artificial Intelligence in Biotechnology",
+            "technical_skills": "Python, Streamlit, LangChain, Google Gemini AI, FAISS, Hugging Face Embeddings, SQLite",
+            "publications_projects": "AI Research Assistant System Engine (v2.0) - Lead Developer"
+        }
 
-def write_user_profile_name(new_name: str):
+def save_user_profile(profile_data: dict):
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
-        cursor.execute("INSERT OR REPLACE INTO profile (username, name) VALUES (?, ?)", (st.session_state.user, new_name))
+        cursor.execute("""
+        INSERT OR REPLACE INTO profile 
+        (username, name, role_title, institution, biography, research_interests, technical_skills, publications_projects) 
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            st.session_state.user,
+            profile_data["name"],
+            profile_data["role_title"],
+            profile_data["institution"],
+            profile_data["biography"],
+            profile_data["research_interests"],
+            profile_data["technical_skills"],
+            profile_data["publications_projects"]
+        ))
         conn.commit()
 
-# ---------- ISOLATED MEMORY STORAGE ----------
+# ---------- ISOLATED CHAT STORAGE ----------
 def archive_chat_interaction(role: str, message: str):
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
@@ -203,7 +230,9 @@ def purge_user_chat_history():
         conn.commit()
 
 # ---------- SIDEBAR NAVIGATION & IO CONTROL ----------
-st.sidebar.markdown(f"### 🧬 Operator: `{get_user_profile_name()}`")
+profile_state = load_user_profile()
+st.sidebar.markdown(f"### 🧬 Operator: `{profile_state['name']}`")
+st.sidebar.caption(f"🎯 Context Mode: Active")
 
 if st.sidebar.button("Terminate Session", use_container_width=True):
     st.session_state.user = None
@@ -213,7 +242,7 @@ if st.sidebar.button("Terminate Session", use_container_width=True):
 st.sidebar.markdown("---")
 view_selection = st.sidebar.radio(
     "Control Panel Subsystems", 
-    ["💬 Analytical Chat Workspace", "📄 Structural Document Analyzer", "👤 Metadata Profile", "💡 Core Documentation Workspace"]
+    ["💬 Analytical Chat Workspace", "📄 Structural Document Analyzer", "👤 Researcher Profile Matrix", "💡 Core Documentation Workspace"]
 )
 st.sidebar.markdown("---")
 
@@ -231,9 +260,23 @@ if st.sidebar.button("Purge Conversation Cache", type="secondary", use_container
 
 # ---------- ACTIVE APPLICATIONS INTERFACES ----------
 
-# 1. ANALYTICAL CHAT WORKSPACE
+# 1. ANALYTICAL CHAT WORKSPACE (OUTCOME ENHANCED)
 if view_selection == "💬 Analytical Chat Workspace":
-    st.title(f"💬 Active Cognitive Workspace — Operator: {get_user_profile_name()}")
+    st.title(f"💬 Active Cognitive Workspace")
+    st.caption("Enhanced with multi-modal research persona directives for maximizing downstream outcomes.")
+    
+    # Advanced Analytical Persona Selection Matrix
+    research_mode = st.selectbox(
+        "Select Pipeline AI Core Persona Optimization Mode:",
+        [
+            "🔬 Default Comprehensive Research Scientist",
+            "🧪 Methodological Assay & Experimental Architect",
+            "📊 Data Signal, Statistics & Quant Extraction Matrix",
+            "🔎 Lit-Review Meta-Analysis & Gap Identifier"
+        ]
+    )
+
+    st.markdown("---")
     
     historical_logs = retrieve_chat_history()
     for role_type, message_payload in historical_logs:
@@ -253,10 +296,10 @@ if view_selection == "💬 Analytical Chat Workspace":
 
         bounded_history_slice = "\n".join([f"{r.upper()}: {m}" for r, m in historical_logs[-8:]])
 
-        # Advanced Core RAG Orchestration Prompt Template
+        # Advanced Context Persona Switch Tuning
         structured_system_prompt = f"""
         [ROLE & ROLE CONTEXT]
-        You are an authoritative, elite AI Senior Researcher specializing in Biotechnology, Genomics, and Advanced Life Sciences.
+        You are an elite Senior AI Computational Biologist optimized via this directive: **{research_mode}**.
         Your goal is to address the user's true intent with insightful, yet clear and concise responses.
         Balance deep empathy with intellectual candor: validate structural scientific challenges but directly and professionally correct flaws in logic or user assumptions.
 
@@ -268,9 +311,9 @@ if view_selection == "💬 Analytical Chat Workspace":
 
         [EXECUTION INSTRUCTIONS]
         - Answer the primary request directly with a rigorous, high-density scientific response.
-        - If the document context is available, prioritize its data points, numbers, or specific criteria over generic base training knowledge.
-        - Use advanced markdown structures like clean nested list patterns, comparison tables, or clear LaTeX blocks ($inline$ or $$display$$) for math modeling if required. 
-        - Avoid filler phrases like "Based on the text provided..." or "According to the PDF...". Deliver the results seamlessly.
+        - Prioritize numerical parameters, controls, cell models, values, and explicit data lines over generic baseline information.
+        - Use advanced markdown structures like clean nested list patterns, comparison tables, or clear LaTeX blocks ($inline$ or $$display$$) for math modeling if required.
+        - Do not use meta-phrases like "Based on the text...". Output the raw scientific synthesis cleanly.
 
         USER SEARCH REQUEST: {user_raw_input}
         EXPERIMENTAL ADVANCED RESPONSE:
@@ -323,34 +366,66 @@ elif view_selection == "📄 Structural Document Analyzer":
     else:
         st.warning("⚠️ Context engine offline. Please upload a scientific manuscript PDF via the sidebar control panel to initialize analyzer.")
 
-# 3. METADATA PROFILE MANAGER
-elif view_selection == "👤 Metadata Profile":
-    st.title("👤 Research Engine Metadata Profiles")
-    active_name_state = get_user_profile_name()
-
-    modified_name_input = st.text_input("Operator Designation (Full Name)", value=active_name_state)
-    if st.button("Commit Variable Modification", use_container_width=True):
-        write_user_profile_name(modified_name_input)
-        st.success("Metadata database tables updated.")
-        st.rerun()
-
-    st.markdown("---")
-    st.markdown(f"""
-    ### 📂 Core Identity Mapping
-    * **System Operational Alias:** {active_name_state}
-    * **Database Cryptographic Key:** `{st.session_state.user}`
+# 3. RESEARCHER PROFILE MATRIX (COMPLETELY REDESIGNED & UPGRADED)
+elif view_selection == "👤 Researcher Profile Matrix":
+    st.title("👤 Research Intelligence Identity Matrix")
+    st.caption("Manage operational parameters, biographies, and academic domain specializations below.")
     
-    ### 🔬 Academic Profile Summary
-    Biotechnology student with a strong foundation in molecular biology, microbiology, and applied biosciences. Experienced in scientific literature review, research analysis, and AI-powered biotechnology applications.
-
-    ### 🗂️ Declared Research Priorities
-    * **Bioinformatics Engineering:** Machine learning applications inside complex genomics sequencing models.
-    * **Applied Computational Chemistry:** Computer-aided automated structural drug-target ligand discovery systems.
+    col1, col2 = st.tabs(["📋 View Academic Portfolio CV", "⚙️ Edit Matrix Parameters"])
     
-    ### ⚙️ System Stack Implementations
-    * **AI Stack:** LangChain Optimization Framework, FAISS Vector Pools, Google Gemini Analytics Api.
-    * **Data Matrix Environment:** Python Engine, SQLite Database Layer, Streamlit Interface Layer.
-    """)
+    with col1:
+        st.markdown(f"""
+        # {profile_state['name']}
+        ### *{profile_state['role_title']}* — **{profile_state['institution']}**
+        
+        ---
+        
+        ### 🔬 Executive Academic Summary
+        {profile_state['biography']}
+        
+        ### 🧬 Primary Domain Specializations
+        """)
+        
+        # Format skills and interests dynamically into neat tags
+        for interest in profile_state['research_interests'].split(','):
+            st.markdown(f"- 🧪 `{interest.strip()}`")
+            
+        st.markdown("### 🛠️ Core Technology Stacks & Frameworks")
+        for skill in profile_state['technical_skills'].split(','):
+            st.markdown(f"- 💻 **{skill.strip()}**")
+            
+        st.markdown(f"""
+        ### 📂 Publications, Core Tracked Projects & Credentials
+        {profile_state['publications_projects']}
+        
+        ---
+        **Cryptographic Identity Verification Key:** `{st.session_state.user}`
+        """)
+        
+    with col2:
+        st.markdown("### Update Core Portfolio Metadata")
+        with st.form("matrix_profile_form"):
+            form_name = st.text_input("Operator Full Name", value=profile_state['name'])
+            form_role = st.text_input("Professional Target Designation", value=profile_state['role_title'])
+            form_inst = st.text_input("Affiliated Research Institution", value=profile_state['institution'])
+            form_bio = st.text_area("Executive Summary / Professional Bio", value=profile_state['biography'], height=120)
+            form_interests = st.text_area("Research Interests (Comma Separated Items)", value=profile_state['research_interests'])
+            form_skills = st.text_area("Technical Framework Skills (Comma Separated Items)", value=profile_state['technical_skills'])
+            form_pub = st.text_area("Project Tracking & Bibliography Records", value=profile_state['publications_projects'], height=100)
+            
+            if st.form_submit_button("Commit Global Workspace Changes", use_container_width=True):
+                updated_matrix = {
+                    "name": form_name,
+                    "role_title": form_role,
+                    "institution": form_inst,
+                    "biography": form_bio,
+                    "research_interests": form_interests,
+                    "technical_skills": form_skills,
+                    "publications_projects": form_pub
+                }
+                save_user_profile(updated_matrix)
+                st.success("🎉 Matrix metadata updated successfully! Swapping view panels...")
+                st.rerun()
 
 # 4. WORKSPACE DOCUMENTATION
 elif view_selection == "💡 Core Documentation Workspace":
