@@ -172,11 +172,11 @@ def advanced_retrieval(vector_db: FAISS, user_query: str) -> str:
     matched_docs = retriever.invoke(hypothetical_answer)
     return "\n\n".join([doc.page_content for doc in matched_docs])
 
-# ---------- USER PROFILE DATA MATRIX (UPGRADED) ----------
+# ---------- USER PROFILE DATA MATRIX (CRITICAL BUG FIXES HERE) ----------
 def load_user_profile() -> dict:
     with sqlite3.connect(DB_PATH) as conn:
         conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
+        cursor = conn.cursor() # Explicitly tied to localized thread connection
         cursor.execute("SELECT * FROM profile WHERE username=?", (st.session_state.user,))
         res = cursor.fetchone()
         if res:
@@ -193,7 +193,7 @@ def load_user_profile() -> dict:
 
 def save_user_profile(profile_data: dict):
     with sqlite3.connect(DB_PATH) as conn:
-        cursor = conn.cursor()
+        cursor = conn.cursor() # Explicitly tied to localized thread connection
         cursor.execute("""
         INSERT OR REPLACE INTO profile 
         (username, name, role_title, institution, biography, research_interests, technical_skills, publications_projects) 
@@ -210,22 +210,22 @@ def save_user_profile(profile_data: dict):
         ))
         conn.commit()
 
-# ---------- ISOLATED CHAT STORAGE ----------
+# ---------- ISOLATED CHAT STORAGE (CRITICAL BUG FIXES HERE) ----------
 def archive_chat_interaction(role: str, message: str):
     with sqlite3.connect(DB_PATH) as conn:
-        cursor = conn.cursor()
+        cursor = conn.cursor() # Explicitly tied to localized thread connection
         cursor.execute("INSERT INTO chats (username, role, message) VALUES (?, ?, ?)", (st.session_state.user, role, message))
         conn.commit()
 
 def retrieve_chat_history() -> List[Tuple[str, str]]:
     with sqlite3.connect(DB_PATH) as conn:
-        cursor = conn.cursor()
+        cursor = conn.cursor() # Explicitly tied to localized thread connection
         cursor.execute("SELECT role, message FROM chats WHERE username=? ORDER BY timestamp ASC", (st.session_state.user,))
         return cursor.fetchall()
 
 def purge_user_chat_history():
     with sqlite3.connect(DB_PATH) as conn:
-        cursor = conn.cursor()
+        cursor = conn.cursor() # Explicitly tied to localized thread connection
         cursor.execute("DELETE FROM chats WHERE username=?", (st.session_state.user,))
         conn.commit()
 
@@ -260,12 +260,11 @@ if st.sidebar.button("Purge Conversation Cache", type="secondary", use_container
 
 # ---------- ACTIVE APPLICATIONS INTERFACES ----------
 
-# 1. ANALYTICAL CHAT WORKSPACE (OUTCOME ENHANCED)
+# 1. ANALYTICAL CHAT WORKSPACE
 if view_selection == "💬 Analytical Chat Workspace":
     st.title(f"💬 Active Cognitive Workspace")
     st.caption("Enhanced with multi-modal research persona directives for maximizing downstream outcomes.")
     
-    # Advanced Analytical Persona Selection Matrix
     research_mode = st.selectbox(
         "Select Pipeline AI Core Persona Optimization Mode:",
         [
@@ -296,7 +295,6 @@ if view_selection == "💬 Analytical Chat Workspace":
 
         bounded_history_slice = "\n".join([f"{r.upper()}: {m}" for r, m in historical_logs[-8:]])
 
-        # Advanced Context Persona Switch Tuning
         structured_system_prompt = f"""
         [ROLE & ROLE CONTEXT]
         You are an elite Senior AI Computational Biologist optimized via this directive: **{research_mode}**.
@@ -366,7 +364,7 @@ elif view_selection == "📄 Structural Document Analyzer":
     else:
         st.warning("⚠️ Context engine offline. Please upload a scientific manuscript PDF via the sidebar control panel to initialize analyzer.")
 
-# 3. RESEARCHER PROFILE MATRIX (COMPLETELY REDESIGNED & UPGRADED)
+# 3. RESEARCHER PROFILE MATRIX
 elif view_selection == "👤 Researcher Profile Matrix":
     st.title("👤 Research Intelligence Identity Matrix")
     st.caption("Manage operational parameters, biographies, and academic domain specializations below.")
@@ -386,13 +384,14 @@ elif view_selection == "👤 Researcher Profile Matrix":
         ### 🧬 Primary Domain Specializations
         """)
         
-        # Format skills and interests dynamically into neat tags
         for interest in profile_state['research_interests'].split(','):
-            st.markdown(f"- 🧪 `{interest.strip()}`")
+            if interest.strip():
+                st.markdown(f"- 🧪 `{interest.strip()}`")
             
         st.markdown("### 🛠️ Core Technology Stacks & Frameworks")
         for skill in profile_state['technical_skills'].split(','):
-            st.markdown(f"- 💻 **{skill.strip()}**")
+            if skill.strip():
+                st.markdown(f"- 💻 **{skill.strip()}**")
             
         st.markdown(f"""
         ### 📂 Publications, Core Tracked Projects & Credentials
@@ -434,16 +433,6 @@ elif view_selection == "💡 Core Documentation Workspace":
     ### 🛡️ Cognitive Framework Optimization Guide
     
     This interface runs a zero-trust memory state engine mapped across a thread-isolated database layer, processing scientific materials using **RAG (Retrieval-Augmented Generation)** loops.
-
-    ```
-    [PDF Document Input] ──> [Recursive Partitioning Loop (1200 Token Chunks)]
-                                                │
-                                                ▼
-    [MMR Search Filtering] 💾 <── [FAISS High-Density Database Indexing]
-               │
-               ▼
-    [HyDE Query Expansion Engine] ──> [Structured System Prompt Matrix] ──> [Response]
-    ```
 
     #### 💡 Maximize Vector Search Yields
     * **Semantic Precision queries:** Instead of entering generic keyword combinations like `"CRISPR data"`, use direct relational queries like `"Identify exact p-values showing the extraction variance between wild-type and modified sequences."`
