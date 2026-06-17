@@ -2,330 +2,375 @@ import streamlit as st
 import os
 import sqlite3
 import hashlib
-import re
+import tempfile
+from typing import Dict, Any, List, Tuple
 
-# ---------- LLM & LANGCHAIN ----------
+# ---------- LLM & ADVANCED ORCHESTRATION ----------
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_community.document_loaders import PyMuPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from langchain_community.embeddings import HuggingFaceEmbeddings
 
-# Must be configured before using the Gemini API
+# Runtime API Key Enforcement
 if "GOOGLE_API_KEY" in st.secrets:
     os.environ["GOOGLE_API_KEY"] = st.secrets["GOOGLE_API_KEY"]
 
-# ---------- PAGE ----------
-st.set_page_config(page_title="🧬 AI Research System", layout="wide")
-
-# ---------- DATABASE SETUP ----------
-conn = sqlite3.connect("app.db", check_same_thread=False)
-cursor = conn.cursor()
-
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS users (
-    username TEXT PRIMARY KEY,
-    password TEXT
+# ---------- PAGE STATE CONFIGURATION ----------
+st.set_page_config(
+    page_title="🧬 Enterprise AI Research Engine", 
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
-""")
 
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS chats (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    username TEXT,
-    role TEXT,
-    message TEXT
-)
-""")
+# ---------- THREAD-SAFE DATABASE INTERFACE ----------
+DB_PATH = "app.db"
 
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS profile (
-    username TEXT PRIMARY KEY,
-    name TEXT
-)
-""")
-conn.commit()
-
-# ---------- SECURITY ----------
-def hash_password(pw):
-    return hashlib.sha256(pw.encode()).hexdigest()
-
-def signup(u, p):
-    try:
-        cursor.execute("INSERT INTO users VALUES (?, ?)", (u, hash_password(p)))
+def init_db():
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            username TEXT PRIMARY KEY,
+            password TEXT
+        )
+        """)
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS chats (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT,
+            role TEXT,
+            message TEXT,
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+        """)
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS profile (
+            username TEXT PRIMARY KEY,
+            name TEXT
+        )
+        """)
         conn.commit()
-        return True
+
+init_db()
+
+# ---------- SECURITY ENGINE ----------
+def hash_password(password: str) -> str:
+    return hashlib.sha256(password.encode()).hexdigest()
+
+def signup(u: str, p: str) -> bool:
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            cursor = conn.cursor()
+            cursor.execute("INSERT INTO users (username, password) VALUES (?, ?)", (u, hash_password(p)))
+            conn.commit()
+            return True
     except sqlite3.IntegrityError:
         return False
 
-def login(u, p):
-    cursor.execute("SELECT * FROM users WHERE username=? AND password=?", (u, hash_password(p)))
-    return cursor.fetchone()
+def login(u: str, p: str) -> Tuple:
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM users WHERE username=? AND password=?", (u, hash_password(p)))
+        return cursor.fetchone()
 
-# ---------- SESSION STATE ----------
+# ---------- SESSION STATE INITIALIZATION ----------
 if "user" not in st.session_state:
     st.session_state.user = None
+if "vector" not in st.session_state:
+    st.session_state.vector = None
 
-# ---------- LOGIN / SIGNUP UI ----------
+# ---------- IDENTITY VERIFICATION GATEWAY ----------
 if st.session_state.user is None:
-    st.title("🔐 Login / Signup")
-    tab1, tab2 = st.tabs(["Login", "Signup"])
+    st.title("🔐 Core Research Gateway Access")
+    tab1, tab2 = st.tabs(["🔒 Secure Authentication", "📝 System Registration"])
 
     with tab1:
-        u = st.text_input("Username", key="login_user")
-        p = st.text_input("Password", type="password", key="login_pass")
-        if st.button("Login"):
+        u = st.text_input("Credential Identifier (Username)", key="auth_u")
+        p = st.text_input("Access Token (Password)", type="password", key="auth_p")
+        if st.button("Initialize Session", use_container_width=True):
             if login(u, p):
                 st.session_state.user = u
-                st.success("Logged in successfully!")
+                st.success("Authorization granted. Mounting workspace...")
                 st.rerun()
             else:
-                st.error("Invalid credentials")
+                st.error("Access Denied: Invalid credentials.")
 
     with tab2:
-        u = st.text_input("New Username", key="signup_user")
-        p = st.text_input("New Password", type="password", key="signup_pass")
-        if st.button("Create Account"):
-            if signup(u, p):
-                st.success("Account created! Please log in.")
+        nu = st.text_input("Request New Identifier", key="reg_u")
+        np = st.text_input("Configure Secure Token", type="password", key="reg_p")
+        if st.button("Provision Account", use_container_width=True):
+            if signup(nu, np):
+                st.success("Provisioning successful! Proceed to authentication.")
             else:
-                st.error("Username already exists")
+                st.error("Registration Conflict: Identifier already allocated.")
     st.stop()
 
-# ---------- MODEL INITIALIZATION ----------
+# ---------- CACHED AI RESOURCES ----------
 @st.cache_resource
-def load_llm():
+def instantiate_llm() -> ChatGoogleGenerativeAI:
     return ChatGoogleGenerativeAI(
-        model="gemini-1.5-flash",  # Upgraded to stable generation architecture 
-        temperature=0.3
+        model="gemini-1.5-flash", 
+        temperature=0.15,  # Low temperature optimized for rigorous scientific truthfulness
+        max_output_tokens=2048
     )
 
 @st.cache_resource
-def load_embeddings():
-    return HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+def instantiate_embeddings() -> HuggingFaceEmbeddings:
+    return HuggingFaceEmbeddings(
+        model_name="sentence-transformers/all-MiniLM-L6-v2",
+        model_kwargs={'device': 'cpu'}
+    )
 
-llm = load_llm()
-embeddings = load_embeddings()
+llm = instantiate_llm()
+embeddings = instantiate_embeddings()
 
-# Helper function to invoke LLM safely
-def run_llm(prompt_text):
+def run_inference(prompt_payload: str) -> str:
     try:
-        response = llm.invoke(prompt_text)
+        response = llm.invoke(prompt_payload)
         return response.content
     except Exception as e:
-        return f"An error occurred while generating a response: {str(e)}"
+        return f"🚨 Runtime Core Inference Exception: {str(e)}"
 
-# ---------- PROFILE MANAGEMENT ----------
-def get_name():
-    cursor.execute("SELECT name FROM profile WHERE username=?", (st.session_state.user,))
-    r = cursor.fetchone()
-    return r[0] if r else st.session_state.user
+# ---------- ADVANCED VECTOR CONTEXT RETRIEVAL (HyDE) ----------
+def process_pdf(uploaded_file) -> FAISS:
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
+        tmp_file.write(uploaded_file.read())
+        tmp_path = tmp_file.name
 
-def save_name(name):
-    cursor.execute("INSERT OR REPLACE INTO profile (username, name) VALUES (?, ?)", (st.session_state.user, name))
-    conn.commit()
+    try:
+        loader = PyMuPDFLoader(tmp_path)
+        documents = loader.load()
+        text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=1200,
+            chunk_overlap=150,
+            length_function=len
+        )
+        split_chunks = text_splitter.split_documents(documents)
+        vector_store = FAISS.from_documents(split_chunks, embeddings)
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+            
+    return vector_store
 
-# ---------- CHAT MEMORY ----------
-def save_chat(role, msg):
-    cursor.execute("INSERT INTO chats (username, role, message) VALUES (?, ?, ?)",
-                   (st.session_state.user, role, msg))
-    conn.commit()
-
-def load_chat():
-    cursor.execute("SELECT role, message FROM chats WHERE username=?", (st.session_state.user,))
-    return cursor.fetchall()
-
-def clear_chat():
-    cursor.execute("DELETE FROM chats WHERE username=?", (st.session_state.user,))
-    conn.commit()
-
-# ---------- PDF & RAG ENGINE ----------
-def process_pdf(file):
-    with open("temp.pdf", "wb") as f:
-        f.write(file.read())
-
-    loader = PyMuPDFLoader("temp.pdf")
-    docs = loader.load()
-
-    splitter = RecursiveCharacterTextSplitter(chunk_size=1500, chunk_overlap=200)
-    chunks = splitter.split_documents(docs)
+def advanced_retrieval(vector_db: FAISS, user_query: str) -> str:
+    """ Implements a Hypothetical Document Embedding (HyDE) approach via a dual-loop prompt mechanism. """
+    hyde_generation_prompt = f"""
+    You are a principal computational biologist. Generate a single highly technical, ideal paragraph answering the following request. 
+    Use specialized jargon, chemical formulas, or analytical patterns appropriate for the topic. Do not include introductory notes.
     
-    # Clean up temp file
-    if os.path.exists("temp.pdf"):
-        os.remove("temp.pdf")
+    Target Request: {user_query}
+    """
+    hypothetical_answer = run_inference(hyde_generation_prompt)
+    
+    # Use the synthesized high-density response to search the real vector store
+    retriever = vector_db.as_retriever(search_type="mmr", search_kwargs={"k": 5, "fetch_k": 15})
+    matched_docs = retriever.invoke(hypothetical_answer)
+    return "\n\n".join([doc.page_content for doc in matched_docs])
 
-    return FAISS.from_documents(chunks, embeddings)
+# ---------- USER PROFILE PERSISTENCE ----------
+def get_user_profile_name() -> str:
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT name FROM profile WHERE username=?", (st.session_state.user,))
+        res = cursor.fetchone()
+        return res[0] if res else st.session_state.user
 
-def retrieval(vector_store, query):
-    retriever = vector_store.as_retriever(
-        search_type="similarity",
-        search_kwargs={"k": 5}
-    )
-    docs = retriever.invoke(query)
-    return "\n\n".join([d.page_content for d in docs])
+def write_user_profile_name(new_name: str):
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.execute("INSERT OR REPLACE INTO profile (username, name) VALUES (?, ?)", (st.session_state.user, new_name))
+        conn.commit()
 
-# ---------- SIDEBAR NAVIGATION ----------
-st.sidebar.write(f"劈 {get_name()}")
+# ---------- ISOLATED MEMORY STORAGE ----------
+def archive_chat_interaction(role: str, message: str):
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.execute("INSERT INTO chats (username, role, message) VALUES (?, ?, ?)", (st.session_state.user, role, message))
+        conn.commit()
 
-if st.sidebar.button("Logout"):
+def retrieve_chat_history() -> List[Tuple[str, str]]:
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT role, message FROM chats WHERE username=? ORDER BY timestamp ASC", (st.session_state.user,))
+        return cursor.fetchall()
+
+def purge_user_chat_history():
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM chats WHERE username=?", (st.session_state.user,))
+        conn.commit()
+
+# ---------- SIDEBAR NAVIGATION & IO CONTROL ----------
+st.sidebar.markdown(f"### 🧬 Operator: `{get_user_profile_name()}`")
+
+if st.sidebar.button("Terminate Session", use_container_width=True):
     st.session_state.user = None
+    st.session_state.vector = None
     st.rerun()
 
-page = st.sidebar.radio("Menu", ["Chat", "Paper Analyzer", "Profile", "Help", "About"])
+st.sidebar.markdown("---")
+view_selection = st.sidebar.radio(
+    "Control Panel Subsystems", 
+    ["💬 Analytical Chat Workspace", "📄 Structural Document Analyzer", "👤 Metadata Profile", "💡 Core Documentation Workspace"]
+)
+st.sidebar.markdown("---")
 
-pdf = st.sidebar.file_uploader("Upload PDF", type=["pdf"])
-if pdf:
-    with st.sidebar.spinner("Parsing document chunks..."):
-        st.session_state.vector = process_pdf(pdf)
-    st.sidebar.success("PDF knowledge index ready!")
+uploaded_pdf = st.sidebar.file_uploader("Ingest Reference Manuscript (PDF)", type=["pdf"])
+if uploaded_pdf:
+    if st.session_state.vector is None:
+        with st.sidebar.spinner("Compiling contextual database index vectors..."):
+            st.session_state.vector = process_pdf(uploaded_pdf)
+        st.sidebar.success("✅ Context Engine Armed.")
 
-if st.sidebar.button("Clear Chat History"):
-    clear_chat()
+if st.sidebar.button("Purge Conversation Cache", type="secondary", use_container_width=True):
+    purge_user_chat_history()
+    st.toast("Internal chat memory tracks cleared.", icon="🗑️")
     st.rerun()
 
-# ---------- APP PAGES ----------
+# ---------- ACTIVE APPLICATIONS INTERFACES ----------
 
-# 1. CHAT UI
-if page == "Chat":
-    st.title(f"💬 Welcome, {get_name()}")
+# 1. ANALYTICAL CHAT WORKSPACE
+if view_selection == "💬 Analytical Chat Workspace":
+    st.title(f"💬 Active Cognitive Workspace — Operator: {get_user_profile_name()}")
+    
+    historical_logs = retrieve_chat_history()
+    for role_type, message_payload in historical_logs:
+        with st.chat_message(role_type):
+            st.markdown(message_payload)
 
-    chat = load_chat()
-    for role, message in chat:
-        with st.chat_message(role):
-            st.write(message)
-
-    q = st.chat_input("Ask a question about biology, AI, or your document...")
-    if q:
-        save_chat("user", q)
+    user_raw_input = st.chat_input("Enter target research prompt, scientific inquiry, or dataset request...")
+    if user_raw_input:
+        archive_chat_interaction("user", user_raw_input)
         with st.chat_message("user"):
-            st.write(q)
+            st.markdown(user_raw_input)
 
-        context = ""
-        if "vector" in st.session_state:
-            context = retrieval(st.session_state.vector, q)
+        context_payload = ""
+        if st.session_state.vector is not None:
+            with st.spinner("Executing HyDE similarity mapping on knowledge base..."):
+                context_payload = advanced_retrieval(st.session_state.vector, user_raw_input)
 
-        # Get recent 5 pairs of exchanges for context memory window
-        history = "\n".join([f"{r}: {m}" for r, m in chat[-10:]])
+        bounded_history_slice = "\n".join([f"{r.upper()}: {m}" for r, m in historical_logs[-8:]])
 
-        prompt = f"""
-You are an advanced AI Research Assistant tailored for Biotechnology and Computational Biology.
-User: {get_name()}
+        # Advanced Core RAG Orchestration Prompt Template
+        structured_system_prompt = f"""
+        [ROLE & ROLE CONTEXT]
+        You are an authoritative, elite AI Senior Researcher specializing in Biotechnology, Genomics, and Advanced Life Sciences.
+        Your goal is to address the user's true intent with insightful, yet clear and concise responses.
+        Balance deep empathy with intellectual candor: validate structural scientific challenges but directly and professionally correct flaws in logic or user assumptions.
 
-Conversation History:
-{history}
+        [HISTORICAL CHAT MEMORY CONTEXT]
+        {bounded_history_slice}
 
-Document Reference Context:
-{context}
+        [VERIFIED DOCUMENTARY KNOWLEDGE BASES]
+        {context_payload if context_payload else "No reference document uploaded. Rely strictly on verified peer-reviewed scientific consensus."}
 
-Question:
-{q}
+        [EXECUTION INSTRUCTIONS]
+        - Answer the primary request directly with a rigorous, high-density scientific response.
+        - If the document context is available, prioritize its data points, numbers, or specific criteria over generic base training knowledge.
+        - Use advanced markdown structures like clean nested list patterns, comparison tables, or clear LaTeX blocks ($inline$ or $$display$$) for math modeling if required. 
+        - Avoid filler phrases like "Based on the text provided..." or "According to the PDF...". Deliver the results seamlessly.
 
-Provide a well-structured academic response. Use markdown formatting elements like bolding, tables, or bulleted items when appropriate to make complex metrics readable.
-"""
+        USER SEARCH REQUEST: {user_raw_input}
+        EXPERIMENTAL ADVANCED RESPONSE:
+        """
+
         with st.chat_message("assistant"):
-            with st.spinner("Analyzing context..."):
-                ans = run_llm(prompt)
-                st.write(ans)
+            with st.spinner("Synthesizing context arrays..."):
+                generated_insight = run_inference(structured_system_prompt)
+                st.markdown(generated_insight)
         
-        save_chat("assistant", ans)
+        archive_chat_interaction("assistant", generated_insight)
 
-# 2. PAPER ANALYZER UI
-elif page == "Paper Analyzer":
-    st.title("📄 Research Paper Automated Executive Summary")
+# 2. STRUCTURAL MANUSCRIPT ANALYZER
+elif view_selection == "📄 Structural Document Analyzer":
+    st.title("📄 Structural Document Processing & Extraction Matrix")
 
-    if "vector" in st.session_state:
-        with st.spinner("Extracting parameters and processing structural context..."):
-            ctx = retrieval(
-                st.session_state.vector,
-                "research objective methodology findings conclusion limitations future work"
-            )
+    if st.session_state.vector is not None:
+        with st.spinner("Compiling structural framework analysis..."):
+            targeted_extraction_criteria = "experimental methodology data metrics benchmarks research gaps hypotheses results"
+            structural_context = advanced_retrieval(st.session_state.vector, targeted_extraction_criteria)
 
-            prompt = f"""
-Analyze this research data extract and organize a detailed report incorporating these sections exactly:
-Use clean, professional Markdown syntax.
+            analytical_meta_prompt = f"""
+            Execute a systematic meta-analysis of the provided research data stream. Assemble an executive report breaking down the details according to these precise criteria:
 
-## Research Objective
-*Provide clear bullet items outlining objectives*
+            # 🧬 Meta-Analysis Executive Dashboard
 
-## Methodology
-*Analyze design patterns, architectures or assays used*
+            ## 🎯 Primary Research Objective
+            *Construct an analytical statement of the paper's core hypothesis and baseline aims.*
 
-## Key Findings
-*Outline experimental results*
+            ## 🧪 Methodological Framework & Assay Architectures
+            *Deconstruct the exact tools, data analysis models, code setups, or cell lines used here.*
 
-## Conclusion
-*Summarize primary takeaways*
+            ## 📊 Verified Key Findings & Data Signals
+            *Isolate quantifiable metrics, outcomes, comparisons, and performance data points.*
 
-## Future Scope
-*Where can this work expand next?*
+            ## 🔎 Identified Research Gaps & Structural Limitations
+            *What did the researchers fail to control for? Highlight exactly what remains unresolved or flawed.*
 
-## Simple Explanation
-*A high-level plain English summary mapping what this means for non-technical peers*
+            ## 🔮 Future Translational Scope
+            *Detail concrete future work vectors built logically from these findings.*
 
-Paper Context:
-{ctx}
-"""
-            ans = run_llm(prompt)
-        st.markdown(ans)
+            ## 💡 Non-Technical Executive Translation
+            *Synthesize the complex bio-computational takeaways into plain English tailored for project coordinators.*
+
+            DOCUMENTATION BODY TARGET FILE:
+            {structural_context}
+            """
+            comprehensive_analysis_report = run_inference(analytical_meta_prompt)
+            st.markdown(comprehensive_analysis_report)
     else:
-        st.warning("⚠️ Please upload a research paper PDF in the sidebar to initialize analytics.")
+        st.warning("⚠️ Context engine offline. Please upload a scientific manuscript PDF via the sidebar control panel to initialize analyzer.")
 
-# 3. PROFILE UI
-elif page == "Profile":
-    st.title("👤 Research Profile Settings")
-    current_name = get_name()
+# 3. METADATA PROFILE MANAGER
+elif view_selection == "👤 Metadata Profile":
+    st.title("👤 Research Engine Metadata Profiles")
+    active_name_state = get_user_profile_name()
 
-    name = st.text_input("Full Name", value=current_name)
-    if st.button("Save Profile"):
-        save_name(name)
-        st.success("Profile updated successfully!")
+    modified_name_input = st.text_input("Operator Designation (Full Name)", value=active_name_state)
+    if st.button("Commit Variable Modification", use_container_width=True):
+        write_user_profile_name(modified_name_input)
+        st.success("Metadata database tables updated.")
         st.rerun()
 
     st.markdown("---")
     st.markdown(f"""
-    ### User Information
-    * **Display Name:** {current_name}
-    * **System Identifier:** {st.session_state.user}
+    ### 📂 Core Identity Mapping
+    * **System Operational Alias:** {active_name_state}
+    * **Database Cryptographic Key:** `{st.session_state.user}`
     
-    ### About Me
+    ### 🔬 Academic Profile Summary
     Biotechnology student with a strong foundation in molecular biology, microbiology, and applied biosciences. Experienced in scientific literature review, research analysis, and AI-powered biotechnology applications.
 
-    ### Research Interests
-    * Molecular Biology & Genetics
-    * Bioinformatics & Computational Modeling
-    * Automated High-Throughput Screening & Drug Discovery
-    * Machine Learning Application inside Applied Biology
-
-    ### Core Framework Competencies
-    * **Languages:** Python, SQL
-    * **AI Engineering:** LangChain, Google Gemini API, FAISS, Hugging Face Tokenizers
-    * **UI/Data Deployments:** Streamlit, SQLite
+    ### 🗂️ Declared Research Priorities
+    * **Bioinformatics Engineering:** Machine learning applications inside complex genomics sequencing models.
+    * **Applied Computational Chemistry:** Computer-aided automated structural drug-target ligand discovery systems.
+    
+    ### ⚙️ System Stack Implementations
+    * **AI Stack:** LangChain Optimization Framework, FAISS Vector Pools, Google Gemini Analytics Api.
+    * **Data Matrix Environment:** Python Engine, SQLite Database Layer, Streamlit Interface Layer.
     """)
 
-# 4. HELP GUIDE
-elif page == "Help":
-    st.title("❓ Help & Documentation Engine")
+# 4. WORKSPACE DOCUMENTATION
+elif view_selection == "💡 Core Documentation Workspace":
+    st.title("💡 Advanced Platform Architecture Blueprint")
     st.markdown("""
-    ### 🚀 Getting Started Workflow
-
-    1. **Upload Reference Media:** Drag and drop any multi-page scientific study manuscript (PDF format) into the left-hand sidebar workspace tool. 
-    2. **Context Engine Build:** The platform automatically splits data arrays using recursive text splitters to embed data blocks via vector modeling directly into a running local storage database instance.
-    3. **Query Engine Processing:** Open the **Chat** interface to run complex contextual lookups or use **Paper Analyzer** to produce custom executive summaries instantaneously.
+    ### 🛡️ Cognitive Framework Optimization Guide
     
-    ### 💡 Pro-Tips for Optimal Prompt Performance
-    * Keep questions direct and contextually aligned to what exists inside your uploaded document schema.
-    * Use the **Clear Chat History** option whenever starting a brand new topic framework to prevent token overflow bottlenecks.
-    """)
+    This interface runs a zero-trust memory state engine mapped across a thread-isolated database layer, processing scientific materials using **RAG (Retrieval-Augmented Generation)** loops.
 
-# 5. ABOUT PAGE
-elif page == "About":
-    st.title("👨‍🔬 System Developer Blueprint")
-    st.markdown("""
-    ### Mohan K
-    **Biotechnology Scholar & Applied AI Developer**
-    
-    This interface bridges the gap between processing raw scientific publications and surfacing instant intelligence insights using Retrieval-Augmented Generation (RAG).
+    ```
+    [PDF Document Input] ──> [Recursive Partitioning Loop (1200 Token Chunks)]
+                                                │
+                                                ▼
+    [MMR Search Filtering] 💾 <── [FAISS High-Density Database Indexing]
+               │
+               ▼
+    [HyDE Query Expansion Engine] ──> [Structured System Prompt Matrix] ──> [Response]
+    ```
 
-    * **Contact Interface:** mohanraj50115@gmail.com
-    * **Professional Networks:** [LinkedIn Workspace Profile](http://www.linkedin.com/in/mohan-k-307749308)
+    #### 💡 Maximize Vector Search Yields
+    * **Semantic Precision queries:** Instead of entering generic keyword combinations like `"CRISPR data"`, use direct relational queries like `"Identify exact p-values showing the extraction variance between wild-type and modified sequences."`
+    * **State Memory Recycled Cleanup:** Use the Sidebar *Purge* option periodically during multi-manuscript sessions to clean out the system memory window. This stops context interference from earlier documents.
     """)
