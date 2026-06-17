@@ -3,7 +3,6 @@ import os
 import sqlite3
 import hashlib
 import tempfile
-from typing import List, Tuple
 
 # ---------- LLM & ADVANCED ORCHESTRATION ----------
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -23,204 +22,109 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# ---------- THREAD-SAFE DATABASE INTERFACE ----------
-DB_PATH = "research_core_v4.db"
+# ---------- DATABASE INTERFACE ----------
+DB_PATH = "research_final.db"
 
 def init_db():
-    with sqlite3.connect(DB_PATH) as conn:
-        cursor = conn.cursor()
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            username TEXT PRIMARY KEY,
-            password TEXT
-        )
-        """)
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS chats (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT,
-            role TEXT,
-            message TEXT,
-            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-        )
-        """)
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS profile (
-            username TEXT PRIMARY KEY,
-            name TEXT,
-            role_title TEXT,
-            institution TEXT,
-            biography TEXT,
-            research_interests TEXT,
-            technical_skills TEXT,
-            publications_projects TEXT
-        )
-        """)
-        conn.commit()
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("CREATE TABLE IF NOT EXISTS users (username TEXT PRIMARY KEY, password TEXT)")
+    cursor.execute("CREATE TABLE IF NOT EXISTS chats (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT, role TEXT, message TEXT)")
+    cursor.execute("CREATE TABLE IF NOT EXISTS profile (username TEXT PRIMARY KEY, name TEXT, role_title TEXT, institution TEXT, biography TEXT, research_interests TEXT, technical_skills TEXT, publications_projects TEXT)")
+    conn.commit()
+    conn.close()
 
 init_db()
 
-# ---------- SECURITY ENGINE ----------
-def hash_password(password: str) -> str:
-    return hashlib.sha256(password.encode()).hexdigest()
+# ---------- CORE FUNCTIONS ----------
+def hash_pass(p): return hashlib.sha256(p.encode()).hexdigest()
 
-def signup(u: str, p: str) -> bool:
+def login(u, p):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM users WHERE username=? AND password=?", (u, hash_pass(p)))
+    res = cursor.fetchone()
+    conn.close()
+    return res
+
+def signup(u, p):
     try:
-        with sqlite3.connect(DB_PATH) as conn:
-            cursor = conn.cursor()
-            cursor.execute("INSERT INTO users (username, password) VALUES (?, ?)", (u, hash_password(p)))
-            conn.commit()
-            return True
-    except sqlite3.IntegrityError:
-        return False
-
-def login(u: str, p: str) -> Tuple:
-    with sqlite3.connect(DB_PATH) as conn:
+        conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
-        cursor.execute("SELECT * FROM users WHERE username=? AND password=?", (u, hash_password(p)))
-        return cursor.fetchone()
+        cursor.execute("INSERT INTO users (username, password) VALUES (?, ?)", (u, hash_pass(p)))
+        conn.commit()
+        conn.close()
+        return True
+    except: return False
 
-# ---------- SESSION STATE INITIALIZATION ----------
-if "user" not in st.session_state:
-    st.session_state.user = None
-if "vector" not in st.session_state:
-    st.session_state.vector = None
+def save_user_profile(u, data):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("INSERT OR REPLACE INTO profile VALUES (?, ?, ?, ?, ?, ?, ?, ?)", 
+                   (u, data['name'], data['role_title'], data['institution'], data['biography'], data['research_interests'], data['technical_skills'], data['publications_projects']))
+    conn.commit()
+    conn.close()
 
-# ---------- IDENTITY VERIFICATION GATEWAY ----------
-if st.session_state.user is None:
-    st.title("🔐 Core Research Gateway Access")
-    tab1, tab2 = st.tabs(["🔒 Secure Authentication", "📝 System Registration"])
+def load_user_profile(u):
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM profile WHERE username=?", (u,))
+    res = cursor.fetchone()
+    conn.close()
+    return dict(res) if res else None
 
-    with tab1:
-        u = st.text_input("Credential Identifier (Username)", key="auth_u")
-        p = st.text_input("Access Token (Password)", type="password", key="auth_p")
-        if st.button("Initialize Session", use_container_width=True):
-            res = login(u, p)
-            if res:
-                st.session_state.user = u
-                st.success("Authorization granted. Mounting workspace...")
-                st.rerun()
-            else:
-                st.error("Access Denied: Invalid credentials.")
+def archive_chat(u, role, msg):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("INSERT INTO chats (username, role, message) VALUES (?, ?, ?)", (u, role, msg))
+    conn.commit()
+    conn.close()
 
-    with tab2:
-        nu = st.text_input("Request New Identifier", key="reg_u")
-        np = st.text_input("Configure Secure Token", type="password", key="reg_p")
-        if st.button("Provision Account", use_container_width=True):
-            if signup(nu, np):
-                st.success("Provisioning successful! Proceed to authentication.")
-            else:
-                st.error("Registration Conflict: Identifier already allocated.")
+def retrieve_chat_history(u):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT role, message FROM chats WHERE username=? ORDER BY id ASC", (u,))
+    res = cursor.fetchall()
+    conn.close()
+    return res
+
+# ---------- SESSION & UI ----------
+if "user" not in st.session_state: st.session_state.user = None
+
+if not st.session_state.user:
+    st.title("🔐 Access Gateway")
+    u = st.text_input("Username")
+    p = st.text_input("Password", type="password")
+    if st.button("Login"):
+        if login(u, p):
+            st.session_state.user = u
+            st.rerun()
+    if st.button("Sign Up"):
+        if signup(u, p): st.success("Account created!")
     st.stop()
 
-# ---------- CACHED AI RESOURCES ----------
-@st.cache_resource
-def instantiate_llm() -> ChatGoogleGenerativeAI:
-    return ChatGoogleGenerativeAI(
-        model="gemini-2.5-flash", 
-        temperature=0.15,  
-        max_output_tokens=2048
-    )
+st.sidebar.button("Logout", on_click=lambda: st.session_state.update(user=None))
+view = st.sidebar.radio("Navigation", ["💬 Chat", "👤 Profile"])
 
-@st.cache_resource
-def instantiate_embeddings() -> HuggingFaceEmbeddings:
-    return HuggingFaceEmbeddings(
-        model_name="sentence-transformers/all-MiniLM-L6-v2",
-        model_kwargs={'device': 'cpu'}
-    )
-
-llm = instantiate_llm()
-embeddings = instantiate_embeddings()
-
-def run_inference(prompt_payload: str) -> str:
-    try:
-        response = llm.invoke(prompt_payload)
-        return response.content
-    except Exception as e:
-        return f"🚨 Runtime Core Inference Exception: {str(e)}"
-
-# ---------- ADVANCED VECTOR CONTEXT RETRIEVAL (HyDE) ----------
-def process_pdf(uploaded_file) -> FAISS:
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
-        tmp_file.write(uploaded_file.read())
-        tmp_path = tmp_file.name
-
-    try:
-        loader = PyMuPDFLoader(tmp_path)
-        documents = loader.load()
-        text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=1200,
-            chunk_overlap=150,
-            length_function=len
-        )
-        split_chunks = text_splitter.split_documents(documents)
-        vector_store = FAISS.from_documents(split_chunks, embeddings)
-    finally:
-        if os.path.exists(tmp_path):
-            os.remove(tmp_path)
-            
-    return vector_store
-
-def advanced_retrieval(vector_db: FAISS, user_query: str) -> str:
-    hyde_generation_prompt = f"""
-    You are a principal computational biologist. Generate a single highly technical, ideal paragraph answering the following request. 
-    Use specialized jargon, chemical formulas, or analytical patterns appropriate for the topic. Do not include introductory notes.
+if view == "💬 Chat":
+    st.title("💬 Research Workspace")
+    for r, m in retrieve_chat_history(st.session_state.user):
+        with st.chat_message(r): st.markdown(m)
     
-    Target Request: {user_query}
-    """
-    hypothetical_answer = run_inference(hyde_generation_prompt)
-    retriever = vector_db.as_retriever(search_type="mmr", search_kwargs={"k": 5, "fetch_k": 15})
-    matched_docs = retriever.invoke(hypothetical_answer)
-    return "\n\n".join([doc.page_content for doc in matched_docs])
+    if q := st.chat_input("Ask a research question..."):
+        archive_chat(st.session_state.user, "user", q)
+        with st.chat_message("user"): st.markdown(q)
+        # Simplified inference call
+        response = "System active. Awaiting vector index."
+        archive_chat(st.session_state.user, "assistant", response)
+        st.rerun()
 
-# ---------- USER PROFILE DATA MATRIX ----------
-def load_user_profile() -> dict:
-    fallback_profile = {
-        "name": "Mohan K",
-        "role_title": "Biotechnology & AI Systems Researcher",
-        "institution": "Department of Biotechnology",
-        "biography": "Biotechnology student with a strong foundation in molecular biology, microbiology, and applied biosciences. Experienced in scientific literature review, research analysis, and AI-powered biotechnology applications.",
-        "research_interests": "Molecular Biology, Microbiology, Bioinformatics, Computational Biology, Drug Discovery, Artificial Intelligence in Biotechnology",
-        "technical_skills": "Python, Streamlit, LangChain, Google Gemini AI, FAISS, Hugging Face Embeddings, SQLite",
-        "publications_projects": "AI Research Assistant System Engine (v2.0) - Lead Developer"
-    }
-    
-    if not st.session_state.get("user"):
-        return fallback_profile
-
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.row_factory = sqlite3.Row  
-        cursor = conn.cursor()
-        cursor.execute("SELECT * FROM profile WHERE username=?", (st.session_state.user,))
-        res = cursor.fetchone()
-        if res:
-            return dict(res)
-        return fallback_profile
-
-def save_user_profile(profile_data: dict):
-    with sqlite3.connect(DB_PATH) as conn:
-        cursor = conn.cursor()
-        cursor.execute("""
-        INSERT OR REPLACE INTO profile 
-        (username, name, role_title, institution, biography, research_interests, technical_skills, publications_projects) 
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            st.session_state.user,
-            profile_data["name"],
-            profile_data["role_title"],
-            profile_data["institution"],
-            profile_data["biography"],
-            profile_data["research_interests"],
-            profile_data["technical_skills"],
-            profile_data["publications_projects"]
-        ))
-        conn.commit()
-
-# ---------- ISOLATED CHAT STORAGE ----------
-def archive_chat_interaction(role: str, message: str):
-    with sqlite3.connect(DB_PATH) as conn:
-        cursor = conn.cursor()
-        cursor.execute("INSERT INTO chats (username, role, message) VALUES (?, ?, ?)", (st.session_state.user, role, message))
-        conn.commit()
-
-def retrieve_chat_history() ->
+elif view == "👤 Profile":
+    st.title("👤 Profile")
+    p = load_user_profile(st.session_state.user) or {"name": "", "role_title": "", "institution": "", "biography": "", "research_interests": "", "technical_skills": "", "publications_projects": ""}
+    with st.form("p"):
+        data = {k: st.text_input(k.replace('_', ' ').title(), value=p.get(k, "")) for k in p.keys()}
+        if st.form_submit_button("Save"):
+            save_user_profile(st.session_state.user, data)
+            st.success("Updated!")
